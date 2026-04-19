@@ -1,0 +1,8 @@
+# Robotic Horse v2 — MuJoCo + RL dependencies
+mujoco>=3.1.0
+gymnasium>=0.29.0
+stable-baselines3[extra]>=2.3.0
+numpy>=1.24.0
+torch>=2.1.0
+tensorboard>=2.15.0
+matplotlib>=3.8.0

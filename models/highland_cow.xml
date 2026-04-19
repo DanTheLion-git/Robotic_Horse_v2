@@ -1,0 +1,373 @@
+<!--
+  Highland Cow — MuJoCo MJCF Model (free-standing, no carriage)
+  ==============================================================
+  150cm withers height bovine robot, torque-controlled.
+  Based on the Gazebo URDF dimensions but redesigned for MuJoCo's
+  torque control and contact model.
+
+  Body: split rear (48kg) + front (59kg) via spine yaw joint
+  Legs: 4x (hip_yaw + thigh + knee + cannon)
+  Cannon bones coupled to knee via equality constraints (reciprocal apparatus rear,
+  parallelogram front).
+
+  Actuated: 13 joints (spine + 4×3 leg DOF)
+  Passive:  4 cannon joints (coupled)
+
+  Total mass: ~107 kg
+  Front/rear weight: 55/45 split (bovine standard)
+-->
+<mujoco model="highland_cow">
+  <compiler angle="radian" eulerseq="XYZ" autolimits="true"/>
+
+  <option timestep="0.002" iterations="50" solver="Newton" gravity="0 0 -9.81">
+    <flag warmstart="enable"/>
+  </option>
+
+  <default>
+    <joint armature="0.01" damping="2.0" limited="true"/>
+    <geom contype="1" conaffinity="1" condim="3" friction="1.0 0.5 0.01"
+          rgba="0.3 0.3 0.3 1" margin="0.001"/>
+    <motor ctrlrange="-1 1" ctrllimited="true"/>
+    <default class="body">
+      <geom rgba="0.25 0.25 0.30 1" type="box"/>
+    </default>
+    <default class="thigh">
+      <geom rgba="0.90 0.40 0.00 1" type="capsule"/>
+      <joint damping="4.0"/>
+    </default>
+    <default class="shank">
+      <geom rgba="0.20 0.20 0.20 1" type="capsule"/>
+      <joint damping="3.5"/>
+    </default>
+    <default class="cannon">
+      <geom rgba="0.20 0.20 0.20 1" type="capsule"/>
+      <joint damping="1.5"/>
+    </default>
+    <default class="foot">
+      <geom rgba="0.05 0.05 0.05 1" type="sphere" condim="4"
+            friction="1.5 0.8 0.01" solimp="0.95 0.99 0.001"
+            solref="0.005 1.0"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.6 0.7 0.9" rgb2="0.2 0.3 0.5"
+             width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.4 0.5 0.3"
+             rgb2="0.3 0.4 0.2" width="512" height="512"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="floor" type="plane" size="50 50 0.1" material="grid"
+          conaffinity="1" contype="1" condim="4"
+          friction="1.0 0.5 0.01"/>
+
+    <!-- ═══ ROBOT ═══ -->
+    <body name="base_link" pos="0 0 1.20">
+      <!-- Free joint: 6 DOF (translation + rotation) -->
+      <freejoint name="root"/>
+
+      <!-- IMU sensor site -->
+      <site name="imu_site" pos="0 0 0" size="0.01"/>
+
+      <!-- ── REAR BODY (base_link) ── 48 kg -->
+      <inertial pos="0.45 0 0" mass="48.0"
+                diaginertia="6.0 6.1 6.3"/>
+      <!-- Rear barrel -->
+      <geom class="body" name="rear_barrel" pos="0.45 0 0"
+            size="0.45 0.44 0.375"/>
+      <!-- Rump -->
+      <geom class="body" name="rump" pos="0.55 0 0.425"
+            size="0.20 0.38 0.05"/>
+
+      <!-- ── SPINE YAW JOINT ── -->
+      <body name="front_body" pos="0 0 0">
+        <joint name="spine_yaw" type="hinge" axis="0 0 1"
+               range="-0.30 0.30" damping="12.0" armature="0.1"
+               stiffness="20.0"/>
+
+        <!-- ── FRONT BODY ── 59 kg -->
+        <inertial pos="-0.45 0 0" mass="59.0"
+                  diaginertia="7.4 7.5 7.8"/>
+        <!-- Front barrel -->
+        <geom class="body" name="front_barrel" pos="-0.45 0 0"
+              size="0.45 0.44 0.375"/>
+        <!-- Withers hump -->
+        <geom class="body" name="withers" pos="-0.50 0 0.475"
+              size="0.275 0.39 0.10"/>
+        <!-- Chest/brisket -->
+        <geom class="body" name="chest" pos="-0.55 0 -0.435"
+              size="0.20 0.36 0.06"/>
+
+        <!-- ══ HEAD (decorative, not actuated in RL) ══ -->
+        <body name="head_base" pos="-0.85 0 0.42">
+          <inertial pos="0.15 0 0.05" mass="6.5"
+                    diaginertia="0.05 0.08 0.06"/>
+          <geom name="neck" type="capsule" fromto="0 0 0 0.10 0 0.15"
+                size="0.08" rgba="0.25 0.25 0.30 1"/>
+          <geom name="skull" type="ellipsoid" pos="0.22 0 0.18"
+                size="0.18 0.12 0.13" rgba="0.25 0.25 0.30 1"/>
+        </body>
+
+        <!-- ══════════════════════════════════════════
+             FRONT-LEFT LEG
+             hip(Z) → thigh(Y) → knee(Y) → cannon(Y) → foot
+        ══════════════════════════════════════════ -->
+        <body name="fl_hip" pos="0.65 0.44 -0.15">
+          <joint name="fl_hip_yaw" type="hinge" axis="0 0 1"
+                 range="-0.35 0.35" damping="4.0"/>
+          <inertial pos="0 0 -0.06" mass="4.0"
+                    diaginertia="0.012 0.012 0.007"/>
+          <geom type="cylinder" pos="0 0 -0.06"
+                size="0.05 0.06" rgba="0.75 0.75 0.80 1"/>
+
+          <body name="fl_thigh" pos="0 0 -0.10">
+            <joint name="fl_thigh_pitch" type="hinge" axis="0 1 0"
+                   range="-0.30 1.20" damping="5.0" armature="0.05"/>
+            <inertial pos="0 0 -0.19" mass="4.0"
+                      diaginertia="0.050 0.050 0.003"/>
+            <geom class="thigh" fromto="0 0 0 0 0 -0.38"
+                  size="0.04" name="fl_thigh_geom"/>
+
+            <body name="fl_shank" pos="0 0 -0.38">
+              <joint name="fl_knee_pitch" type="hinge" axis="0 1 0"
+                     range="-1.80 -0.10" damping="6.0" armature="0.05"/>
+              <inertial pos="0 0 -0.17" mass="3.5"
+                        diaginertia="0.035 0.035 0.002"/>
+              <geom class="shank" fromto="0 0 0 0 0 -0.34"
+                    size="0.035" name="fl_shank_geom"/>
+
+              <body name="fl_cannon" pos="0 0 -0.34">
+                <joint name="fl_cannon_pitch" type="hinge" axis="0 1 0"
+                       range="-2.0 2.0" damping="1.5"/>
+                <inertial pos="0 0 -0.09" mass="1.0"
+                          diaginertia="0.003 0.003 0.0003"/>
+                <geom class="cannon" fromto="0 0 0 0 0 -0.18"
+                      size="0.025" name="fl_cannon_geom"/>
+
+                <body name="fl_foot" pos="0 0 -0.18">
+                  <geom class="foot" name="fl_foot_geom" size="0.05"
+                        mass="0.4"/>
+                  <site name="fl_foot_site" pos="0 0 -0.05" size="0.01"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+
+        <!-- ══════════════════════════════════════════
+             FRONT-RIGHT LEG
+        ══════════════════════════════════════════ -->
+        <body name="fr_hip" pos="0.65 -0.44 -0.15">
+          <joint name="fr_hip_yaw" type="hinge" axis="0 0 1"
+                 range="-0.35 0.35" damping="4.0"/>
+          <inertial pos="0 0 -0.06" mass="4.0"
+                    diaginertia="0.012 0.012 0.007"/>
+          <geom type="cylinder" pos="0 0 -0.06"
+                size="0.05 0.06" rgba="0.75 0.75 0.80 1"/>
+
+          <body name="fr_thigh" pos="0 0 -0.10">
+            <joint name="fr_thigh_pitch" type="hinge" axis="0 1 0"
+                   range="-0.30 1.20" damping="5.0" armature="0.05"/>
+            <inertial pos="0 0 -0.19" mass="4.0"
+                      diaginertia="0.050 0.050 0.003"/>
+            <geom class="thigh" fromto="0 0 0 0 0 -0.38"
+                  size="0.04" name="fr_thigh_geom"/>
+
+            <body name="fr_shank" pos="0 0 -0.38">
+              <joint name="fr_knee_pitch" type="hinge" axis="0 1 0"
+                     range="-1.80 -0.10" damping="6.0" armature="0.05"/>
+              <inertial pos="0 0 -0.17" mass="3.5"
+                        diaginertia="0.035 0.035 0.002"/>
+              <geom class="shank" fromto="0 0 0 0 0 -0.34"
+                    size="0.035" name="fr_shank_geom"/>
+
+              <body name="fr_cannon" pos="0 0 -0.34">
+                <joint name="fr_cannon_pitch" type="hinge" axis="0 1 0"
+                       range="-2.0 2.0" damping="1.5"/>
+                <inertial pos="0 0 -0.09" mass="1.0"
+                          diaginertia="0.003 0.003 0.0003"/>
+                <geom class="cannon" fromto="0 0 0 0 0 -0.18"
+                      size="0.025" name="fr_cannon_geom"/>
+
+                <body name="fr_foot" pos="0 0 -0.18">
+                  <geom class="foot" name="fr_foot_geom" size="0.05"
+                        mass="0.4"/>
+                  <site name="fr_foot_site" pos="0 0 -0.05" size="0.01"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+
+      </body> <!-- /front_body -->
+
+      <!-- ══════════════════════════════════════════
+           REAR-LEFT LEG (on base_link)
+      ══════════════════════════════════════════ -->
+      <body name="rl_hip" pos="-0.65 0.40 0.12">
+        <joint name="rl_hip_yaw" type="hinge" axis="0 0 1"
+               range="-0.35 0.35" damping="3.5"/>
+        <inertial pos="0 0 -0.06" mass="4.0"
+                  diaginertia="0.012 0.012 0.007"/>
+        <geom type="cylinder" pos="0 0 -0.06"
+              size="0.05 0.06" rgba="0.75 0.75 0.80 1"/>
+
+        <body name="rl_thigh" pos="0 0 -0.10">
+          <joint name="rl_thigh_pitch" type="hinge" axis="0 1 0"
+                 range="-1.20 0.30" damping="4.5" armature="0.05"/>
+          <inertial pos="0 0 -0.25" mass="5.0"
+                    diaginertia="0.107 0.107 0.005"/>
+          <geom class="thigh" fromto="0 0 0 0 0 -0.50"
+                size="0.045" name="rl_thigh_geom"/>
+
+          <body name="rl_shank" pos="0 0 -0.50">
+            <joint name="rl_knee_pitch" type="hinge" axis="0 1 0"
+                   range="0.10 1.80" damping="5.0" armature="0.05"/>
+            <inertial pos="0 0 -0.225" mass="4.0"
+                      diaginertia="0.070 0.070 0.003"/>
+            <geom class="shank" fromto="0 0 0 0 0 -0.45"
+                  size="0.04" name="rl_shank_geom"/>
+
+            <body name="rl_cannon" pos="0 0 -0.45">
+              <joint name="rl_cannon_pitch" type="hinge" axis="0 1 0"
+                     range="-2.0 2.0" damping="1.5"/>
+              <inertial pos="0 0 -0.11" mass="1.2"
+                        diaginertia="0.005 0.005 0.0005"/>
+              <geom class="cannon" fromto="0 0 0 0 0 -0.22"
+                    size="0.03" name="rl_cannon_geom"/>
+
+              <body name="rl_foot" pos="0 0 -0.22">
+                <geom class="foot" name="rl_foot_geom" size="0.06"
+                      mass="0.5"/>
+                <site name="rl_foot_site" pos="0 0 -0.06" size="0.01"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ══════════════════════════════════════════
+           REAR-RIGHT LEG (on base_link)
+      ══════════════════════════════════════════ -->
+      <body name="rr_hip" pos="-0.65 -0.40 0.12">
+        <joint name="rr_hip_yaw" type="hinge" axis="0 0 1"
+               range="-0.35 0.35" damping="3.5"/>
+        <inertial pos="0 0 -0.06" mass="4.0"
+                  diaginertia="0.012 0.012 0.007"/>
+        <geom type="cylinder" pos="0 0 -0.06"
+              size="0.05 0.06" rgba="0.75 0.75 0.80 1"/>
+
+        <body name="rr_thigh" pos="0 0 -0.10">
+          <joint name="rr_thigh_pitch" type="hinge" axis="0 1 0"
+                 range="-1.20 0.30" damping="4.5" armature="0.05"/>
+          <inertial pos="0 0 -0.25" mass="5.0"
+                    diaginertia="0.107 0.107 0.005"/>
+          <geom class="thigh" fromto="0 0 0 0 0 -0.50"
+                size="0.045" name="rr_thigh_geom"/>
+
+          <body name="rr_shank" pos="0 0 -0.50">
+            <joint name="rr_knee_pitch" type="hinge" axis="0 1 0"
+                   range="0.10 1.80" damping="5.0" armature="0.05"/>
+            <inertial pos="0 0 -0.225" mass="4.0"
+                      diaginertia="0.070 0.070 0.003"/>
+            <geom class="shank" fromto="0 0 0 0 0 -0.45"
+                  size="0.04" name="rr_shank_geom"/>
+
+            <body name="rr_cannon" pos="0 0 -0.45">
+              <joint name="rr_cannon_pitch" type="hinge" axis="0 1 0"
+                     range="-2.0 2.0" damping="1.5"/>
+              <inertial pos="0 0 -0.11" mass="1.2"
+                        diaginertia="0.005 0.005 0.0005"/>
+              <geom class="cannon" fromto="0 0 0 0 0 -0.22"
+                    size="0.03" name="rr_cannon_geom"/>
+
+              <body name="rr_foot" pos="0 0 -0.22">
+                <geom class="foot" name="rr_foot_geom" size="0.06"
+                      mass="0.5"/>
+                <site name="rr_foot_site" pos="0 0 -0.06" size="0.01"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+
+    </body> <!-- /base_link -->
+  </worldbody>
+
+  <!-- ═══════════════════════════════════════════════════════
+       EQUALITY CONSTRAINTS — cannon bone coupling
+       Front: parallelogram linkage (cannon ≈ -thigh - knee + lean)
+       Rear:  reciprocal apparatus (cannon ≈ offset - 0.85×knee)
+  ═══════════════════════════════════════════════════════ -->
+  <equality>
+    <!-- Front cannons: keep near-vertical via parallelogram
+         cannon = 0.08 - (thigh + knee)  →  cannon + thigh + knee = 0.08
+         Using joint1=cannon, joint2=thigh: polycoef makes cannon track -(thigh+knee)+0.08 -->
+    <joint joint1="fl_cannon_pitch" joint2="fl_thigh_pitch"
+           polycoef="0.08 -1.0 0 0 0" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+    <joint joint1="fl_cannon_pitch" joint2="fl_knee_pitch"
+           polycoef="0 -1.0 0 0 0" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+    <joint joint1="fr_cannon_pitch" joint2="fr_thigh_pitch"
+           polycoef="0.08 -1.0 0 0 0" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+    <joint joint1="fr_cannon_pitch" joint2="fr_knee_pitch"
+           polycoef="0 -1.0 0 0 0" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+
+    <!-- Rear cannons: reciprocal apparatus
+         cannon = 0.379 - 0.85×knee  →  cannon + 0.85×knee = 0.379 -->
+    <joint joint1="rl_cannon_pitch" joint2="rl_knee_pitch"
+           polycoef="0.379 -0.85 0 0 0" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+    <joint joint1="rr_cannon_pitch" joint2="rr_knee_pitch"
+           polycoef="0.379 -0.85 0 0 0" solref="0.01 1" solimp="0.9 0.95 0.001"/>
+  </equality>
+
+  <!-- ═══════════════════════════════════════════════════════
+       ACTUATORS — torque control (13 DOF)
+       Gear values = max torque [Nm] at ctrl=±1
+       Sized for 107kg bovine (55/45 front/rear split)
+  ═══════════════════════════════════════════════════════ -->
+  <actuator>
+    <!-- Spine -->
+    <motor name="spine_yaw_act" joint="spine_yaw" gear="150"/>
+
+    <!-- Front-left: hip=80Nm, thigh=250Nm, knee=350Nm -->
+    <motor name="fl_hip_act"   joint="fl_hip_yaw"      gear="80"/>
+    <motor name="fl_thigh_act" joint="fl_thigh_pitch"   gear="250"/>
+    <motor name="fl_knee_act"  joint="fl_knee_pitch"    gear="350"/>
+
+    <!-- Front-right -->
+    <motor name="fr_hip_act"   joint="fr_hip_yaw"      gear="80"/>
+    <motor name="fr_thigh_act" joint="fr_thigh_pitch"   gear="250"/>
+    <motor name="fr_knee_act"  joint="fr_knee_pitch"    gear="350"/>
+
+    <!-- Rear-left: hip=80Nm, thigh=200Nm, knee=300Nm -->
+    <motor name="rl_hip_act"   joint="rl_hip_yaw"      gear="80"/>
+    <motor name="rl_thigh_act" joint="rl_thigh_pitch"   gear="200"/>
+    <motor name="rl_knee_act"  joint="rl_knee_pitch"    gear="300"/>
+
+    <!-- Rear-right -->
+    <motor name="rr_hip_act"   joint="rr_hip_yaw"      gear="80"/>
+    <motor name="rr_thigh_act" joint="rr_thigh_pitch"   gear="200"/>
+    <motor name="rr_knee_act"  joint="rr_knee_pitch"    gear="300"/>
+  </actuator>
+
+  <!-- ═══════════════════════════════════════════════════════
+       SENSORS
+  ═══════════════════════════════════════════════════════ -->
+  <sensor>
+    <!-- Body state -->
+    <accelerometer name="imu_acc" site="imu_site"/>
+    <gyro name="imu_gyro" site="imu_site"/>
+    <framequat name="body_quat" objtype="site" objname="imu_site"/>
+    <framelinvel name="body_linvel" objtype="site" objname="imu_site"/>
+    <frameangvel name="body_angvel" objtype="site" objname="imu_site"/>
+
+    <!-- Foot contact force sensors -->
+    <touch name="fl_foot_touch" site="fl_foot_site"/>
+    <touch name="fr_foot_touch" site="fr_foot_site"/>
+    <touch name="rl_foot_touch" site="rl_foot_site"/>
+    <touch name="rr_foot_touch" site="rr_foot_site"/>
+  </sensor>
+</mujoco>
