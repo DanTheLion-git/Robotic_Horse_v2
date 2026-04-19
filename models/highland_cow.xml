@@ -1,27 +1,28 @@
 <!--
-  Highland Cow v2 — MuJoCo MJCF Model (RL-optimized)
+  Highland Cow v3 — MuJoCo MJCF Model (RL-optimized)
   ====================================================
   150cm withers-height bovine quadruped for RL locomotion training.
 
-  DESIGN PRINCIPLES (based on state-of-the-art RL locomotion):
-  1. PD position actuators — RL outputs target joint angles, PD tracks them
-  2. Standing keyframe — cow starts in a valid, stable stance
-  3. 12 actuated DOF — 4 legs × 3 joints (hip_roll, hip_pitch, knee)
-  4. 2-segment legs — upper + lower with integrated hoof (simplified)
-  5. Only feet collide with ground — prevents self-collision chaos
-  6. High armature — simulates motor rotor inertia, stabilizes simulation
+  Based on proven Unitree Go1/A1 leg topology from MuJoCo Menagerie:
+  - ALL legs use identical Z-shaped configuration
+  - hip_pitch leans upper leg FORWARD, knee bends lower leg BACK
+  - Feet land directly under hips for natural balance
+  - PD position actuators with kp/kd scaled for ~115kg mass
 
   Anatomy (scaled Highland Cow):
-    Body barrel:  1.10m long × 0.44m wide × 0.44m tall, 80kg
-    Head/neck:    decorative, 7kg
-    Front legs:   upper 0.45m + lower 0.45m + foot r=0.04m  (3.5+2.5+0.5=6.5kg each)
-    Rear legs:    upper 0.48m + lower 0.48m + foot r=0.04m  (4.0+3.0+0.5=7.5kg each)
+    Body barrel:  1.10m × 0.44m × 0.44m, 80kg (capsule + ellipsoid)
+    Head/neck:    decorative, 7kg (capsule + ellipsoid)
+    Front legs:   upper 0.45m + lower 0.45m + foot r=0.04m  (6.5kg each)
+    Rear legs:    upper 0.48m + lower 0.48m + foot r=0.04m  (7.5kg each)
     Total mass:   ~115 kg
 
-  Standing height:
-    Body center at z≈1.00m, withers at ~1.45-1.50m (with hump geometry)
+  Standing geometry (Z-shaped legs, feet under hips):
+    hip_pitch=0.40 rad: upper leg leans forward
+    knee=-0.80 rad: lower leg angles backward
+    Net foot position: directly under hip (Δx ≈ 0)
+    Body center at z=1.01, withers ~1.45m
 -->
-<mujoco model="highland_cow_v2">
+<mujoco model="highland_cow_v3">
   <compiler angle="radian" eulerseq="XYZ" autolimits="true"
             inertiafromgeom="auto"/>
 
@@ -32,20 +33,18 @@
 
   <!-- ═══ DEFAULTS ═══ -->
   <default>
-    <!-- Joints: high armature for stability, moderate damping -->
-    <joint armature="0.08" damping="3.0" limited="true"
-           solimplimit="0.9 0.95 0.001" solreflimit="0.02 1"/>
+    <joint armature="0.08" damping="2.0" limited="true"
+           solimplimit="0.9 0.95 0.001" solreflimit="0.02 1"
+           frictionloss="0.15"/>
 
-    <!-- Geoms: default NO collision (only feet override this) -->
     <geom contype="0" conaffinity="0" condim="3"
           friction="1.0 0.5 0.01" margin="0.001"/>
 
-    <!-- PD actuators: position servo with explicit kp/kd -->
     <general gaintype="fixed" biastype="affine" ctrllimited="true"
              forcelimited="true"/>
 
     <default class="body_geom">
-      <geom rgba="0.55 0.40 0.25 1" type="box"/>
+      <geom rgba="0.55 0.40 0.25 1"/>
     </default>
     <default class="upper_leg">
       <geom rgba="0.50 0.35 0.20 1" type="capsule"/>
@@ -54,7 +53,6 @@
       <geom rgba="0.40 0.30 0.18 1" type="capsule"/>
     </default>
     <default class="foot">
-      <!-- Feet DO collide with ground -->
       <geom rgba="0.15 0.10 0.05 1" type="sphere"
             contype="1" conaffinity="1" condim="4"
             friction="1.5 0.8 0.02"
@@ -70,65 +68,85 @@
     <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>
   </asset>
 
+  <!-- Prevent thigh-body collisions (like ANYmal C) -->
+  <contact>
+    <exclude body1="torso" body2="fl_hip"/>
+    <exclude body1="torso" body2="fr_hip"/>
+    <exclude body1="torso" body2="rl_hip"/>
+    <exclude body1="torso" body2="rr_hip"/>
+  </contact>
+
   <worldbody>
-    <!-- Ground plane — collides with feet only -->
     <geom name="floor" type="plane" size="50 50 0.1" material="grid"
           contype="1" conaffinity="1" condim="4"
           friction="1.0 0.5 0.01"/>
 
     <!-- ═══ HIGHLAND COW BODY ═══ -->
-    <body name="torso" pos="0 0 1.02">
+    <body name="torso" pos="0 0 1.01">
       <freejoint name="root"/>
 
-      <!-- IMU sensor site at body center -->
       <site name="imu_site" pos="0 0 0" size="0.01"/>
 
-      <!-- Main barrel — 80 kg -->
+      <!-- Main barrel — capsule for round bovine body -->
       <inertial pos="0 0 0" mass="80.0"
                 diaginertia="3.5 10.0 10.5"/>
-      <geom class="body_geom" name="barrel" pos="0 0 0"
-            size="0.55 0.22 0.22"/>
-      <!-- Withers hump -->
-      <geom class="body_geom" name="withers" pos="0.30 0 0.28"
-            size="0.20 0.20 0.08"/>
-      <!-- Rump rise -->
-      <geom class="body_geom" name="rump" pos="-0.35 0 0.25"
-            size="0.15 0.19 0.05"/>
+      <geom class="body_geom" name="barrel" type="capsule"
+            fromto="-0.40 0 0  0.40 0 0" size="0.22"
+            pos="0 0 0"/>
+      <!-- Withers hump (ellipsoid) -->
+      <geom class="body_geom" name="withers" type="ellipsoid"
+            pos="0.30 0 0.24" size="0.22 0.20 0.10"/>
+      <!-- Rump (ellipsoid) -->
+      <geom class="body_geom" name="rump" type="ellipsoid"
+            pos="-0.32 0 0.18" size="0.18 0.19 0.08"/>
+      <!-- Belly drop — slight bulge underneath -->
+      <geom class="body_geom" name="belly" type="ellipsoid"
+            pos="0.0 0 -0.12" size="0.35 0.18 0.10"/>
 
       <!-- ── HEAD (decorative, 7 kg) ── -->
       <body name="head" pos="0.60 0 0.15">
         <inertial pos="0.15 0 0.10" mass="7.0"
                   diaginertia="0.08 0.10 0.06"/>
-        <geom name="neck" type="capsule" fromto="0 0 0 0.12 0 0.20"
-              size="0.07" rgba="0.55 0.40 0.25 1"/>
-        <geom name="skull" type="ellipsoid" pos="0.20 0 0.28"
+        <geom name="neck" type="capsule" fromto="0 0 0 0.10 0 0.22"
+              size="0.08" rgba="0.55 0.40 0.25 1"/>
+        <geom name="skull" type="ellipsoid" pos="0.18 0 0.30"
               size="0.16 0.10 0.12" rgba="0.55 0.40 0.25 1"/>
+        <!-- Horns -->
+        <geom name="horn_l" type="capsule"
+              fromto="0.14 0.10 0.38 0.08 0.22 0.46"
+              size="0.015" rgba="0.85 0.80 0.70 1"/>
+        <geom name="horn_r" type="capsule"
+              fromto="0.14 -0.10 0.38 0.08 -0.22 0.46"
+              size="0.015" rgba="0.85 0.80 0.70 1"/>
       </body>
 
       <!-- ═══════════════════════════════════════
-           FRONT-LEFT LEG
+           FRONT-LEFT LEG  (Z-shaped: upper forward, lower back)
            hip_roll(X) → hip_pitch(Y) → knee(Y) → foot
-           Hip at front-left of body
+           Default: hip_pitch=0.40, knee=-0.80
+             Upper: dx=0.175, dz=-0.414
+             Lower: total_angle=-0.40, dx=-0.175, dz=-0.414
+             Net: dx≈0, dz=-0.828, +foot=0.868m
+             Hip z=0.89, foot z=0.022 ✓
       ═══════════════════════════════════════ -->
-      <body name="fl_hip" pos="0.35 0.18 -0.12">
+      <body name="fl_hip" pos="0.35 0.20 -0.12">
         <joint name="fl_hip_roll" type="hinge" axis="1 0 0"
-               range="-0.4 0.4" damping="3.0" armature="0.05"/>
+               range="-0.4 0.4" damping="2.0" armature="0.05"/>
         <joint name="fl_hip_pitch" type="hinge" axis="0 1 0"
-               range="-0.8 0.8" damping="5.0" armature="0.08"/>
+               range="-0.5 1.2" damping="3.0" armature="0.08"/>
         <inertial pos="0 0 -0.225" mass="3.5"
                   diaginertia="0.060 0.060 0.004"/>
         <geom class="upper_leg" fromto="0 0 0 0 0 -0.45"
-              size="0.04" name="fl_upper_geom"/>
+              size="0.045" name="fl_upper_geom"/>
 
         <body name="fl_lower" pos="0 0 -0.45">
           <joint name="fl_knee" type="hinge" axis="0 1 0"
-                 range="-1.6 -0.1" damping="5.0" armature="0.08"/>
+                 range="-1.8 -0.3" damping="3.0" armature="0.08"/>
           <inertial pos="0 0 -0.225" mass="2.5"
                     diaginertia="0.042 0.042 0.002"/>
           <geom class="lower_leg" fromto="0 0 0 0 0 -0.45"
-                size="0.035" name="fl_lower_geom"/>
+                size="0.038" name="fl_lower_geom"/>
 
-          <!-- Hoof -->
           <body name="fl_foot" pos="0 0 -0.45">
             <geom class="foot" name="fl_foot_geom" size="0.04" mass="0.5"/>
             <site name="fl_foot_site" pos="0 0 -0.04" size="0.01"/>
@@ -139,23 +157,23 @@
       <!-- ═══════════════════════════════════════
            FRONT-RIGHT LEG
       ═══════════════════════════════════════ -->
-      <body name="fr_hip" pos="0.35 -0.18 -0.12">
+      <body name="fr_hip" pos="0.35 -0.20 -0.12">
         <joint name="fr_hip_roll" type="hinge" axis="1 0 0"
-               range="-0.4 0.4" damping="3.0" armature="0.05"/>
+               range="-0.4 0.4" damping="2.0" armature="0.05"/>
         <joint name="fr_hip_pitch" type="hinge" axis="0 1 0"
-               range="-0.8 0.8" damping="5.0" armature="0.08"/>
+               range="-0.5 1.2" damping="3.0" armature="0.08"/>
         <inertial pos="0 0 -0.225" mass="3.5"
                   diaginertia="0.060 0.060 0.004"/>
         <geom class="upper_leg" fromto="0 0 0 0 0 -0.45"
-              size="0.04" name="fr_upper_geom"/>
+              size="0.045" name="fr_upper_geom"/>
 
         <body name="fr_lower" pos="0 0 -0.45">
           <joint name="fr_knee" type="hinge" axis="0 1 0"
-                 range="-1.6 -0.1" damping="5.0" armature="0.08"/>
+                 range="-1.8 -0.3" damping="3.0" armature="0.08"/>
           <inertial pos="0 0 -0.225" mass="2.5"
                     diaginertia="0.042 0.042 0.002"/>
           <geom class="lower_leg" fromto="0 0 0 0 0 -0.45"
-                size="0.035" name="fr_lower_geom"/>
+                size="0.038" name="fr_lower_geom"/>
 
           <body name="fr_foot" pos="0 0 -0.45">
             <geom class="foot" name="fr_foot_geom" size="0.04" mass="0.5"/>
@@ -165,25 +183,30 @@
       </body>
 
       <!-- ═══════════════════════════════════════
-           REAR-LEFT LEG (longer segments, cow anatomy)
+           REAR-LEFT LEG (slightly longer segments)
+           Same Z-shape: hip_pitch=0.40, knee=-0.80
+             Upper: dx=0.187, dz=-0.442
+             Lower: total_angle=-0.40, dx=-0.187, dz=-0.442
+             Net: dx≈0, dz=-0.884, +foot=0.924m
+             Hip z=0.93, foot z=0.006 ✓
       ═══════════════════════════════════════ -->
-      <body name="rl_hip" pos="-0.35 0.18 -0.08">
+      <body name="rl_hip" pos="-0.35 0.20 -0.08">
         <joint name="rl_hip_roll" type="hinge" axis="1 0 0"
-               range="-0.4 0.4" damping="3.0" armature="0.05"/>
+               range="-0.4 0.4" damping="2.0" armature="0.05"/>
         <joint name="rl_hip_pitch" type="hinge" axis="0 1 0"
-               range="-0.8 0.8" damping="5.0" armature="0.08"/>
+               range="-0.5 1.2" damping="3.0" armature="0.08"/>
         <inertial pos="0 0 -0.24" mass="4.0"
                   diaginertia="0.077 0.077 0.005"/>
         <geom class="upper_leg" fromto="0 0 0 0 0 -0.48"
-              size="0.045" name="rl_upper_geom"/>
+              size="0.050" name="rl_upper_geom"/>
 
         <body name="rl_lower" pos="0 0 -0.48">
           <joint name="rl_knee" type="hinge" axis="0 1 0"
-                 range="-1.6 -0.1" damping="5.0" armature="0.08"/>
+                 range="-1.8 -0.3" damping="3.0" armature="0.08"/>
           <inertial pos="0 0 -0.24" mass="3.0"
                     diaginertia="0.058 0.058 0.003"/>
           <geom class="lower_leg" fromto="0 0 0 0 0 -0.48"
-                size="0.04" name="rl_lower_geom"/>
+                size="0.042" name="rl_lower_geom"/>
 
           <body name="rl_foot" pos="0 0 -0.48">
             <geom class="foot" name="rl_foot_geom" size="0.04" mass="0.5"/>
@@ -195,23 +218,23 @@
       <!-- ═══════════════════════════════════════
            REAR-RIGHT LEG
       ═══════════════════════════════════════ -->
-      <body name="rr_hip" pos="-0.35 -0.18 -0.08">
+      <body name="rr_hip" pos="-0.35 -0.20 -0.08">
         <joint name="rr_hip_roll" type="hinge" axis="1 0 0"
-               range="-0.4 0.4" damping="3.0" armature="0.05"/>
+               range="-0.4 0.4" damping="2.0" armature="0.05"/>
         <joint name="rr_hip_pitch" type="hinge" axis="0 1 0"
-               range="-0.8 0.8" damping="5.0" armature="0.08"/>
+               range="-0.5 1.2" damping="3.0" armature="0.08"/>
         <inertial pos="0 0 -0.24" mass="4.0"
                   diaginertia="0.077 0.077 0.005"/>
         <geom class="upper_leg" fromto="0 0 0 0 0 -0.48"
-              size="0.045" name="rr_upper_geom"/>
+              size="0.050" name="rr_upper_geom"/>
 
         <body name="rr_lower" pos="0 0 -0.48">
           <joint name="rr_knee" type="hinge" axis="0 1 0"
-                 range="-1.6 -0.1" damping="5.0" armature="0.08"/>
+                 range="-1.8 -0.3" damping="3.0" armature="0.08"/>
           <inertial pos="0 0 -0.24" mass="3.0"
                     diaginertia="0.058 0.058 0.003"/>
           <geom class="lower_leg" fromto="0 0 0 0 0 -0.48"
-                size="0.04" name="rr_lower_geom"/>
+                size="0.042" name="rr_lower_geom"/>
 
           <body name="rr_foot" pos="0 0 -0.48">
             <geom class="foot" name="rr_foot_geom" size="0.04" mass="0.5"/>
@@ -226,58 +249,57 @@
   <!-- ═══════════════════════════════════════════════════════
        ACTUATORS — PD Position Servos (12 DOF)
        force = kp * (ctrl - qpos) - kd * qvel
-       ctrl = target joint position (set by RL policy)
-       kp/kd scaled for ~115 kg quadruped
+       Gains follow Go1/A1 pattern: kp=100 per 5kg, scaled to ~115kg
+       Hip roll: kp=100, kd=5  (lateral stability)
+       Hip pitch: kp=200, kd=8  (main support + locomotion)
+       Knee: kp=200, kd=8  (main support + locomotion)
   ═══════════════════════════════════════════════════════ -->
   <actuator>
-    <!-- FRONT-LEFT: hip_roll, hip_pitch, knee -->
+    <!-- FRONT-LEFT -->
     <general name="fl_hip_roll_act"  joint="fl_hip_roll"
-             gainprm="80 0 0"  biasprm="0 -80 -4"   biastype="affine"
-             ctrlrange="-0.4 0.4"   forcerange="-120 120"/>
+             gainprm="100 0 0" biasprm="0 -100 -5"  biastype="affine"
+             ctrlrange="-0.4 0.4"   forcerange="-150 150"/>
     <general name="fl_hip_pitch_act" joint="fl_hip_pitch"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-0.8 0.8"   forcerange="-350 350"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-0.5 1.2"   forcerange="-400 400"/>
     <general name="fl_knee_act"      joint="fl_knee"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-1.6 -0.1"  forcerange="-400 400"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-1.8 -0.3"  forcerange="-400 400"/>
 
     <!-- FRONT-RIGHT -->
     <general name="fr_hip_roll_act"  joint="fr_hip_roll"
-             gainprm="80 0 0"  biasprm="0 -80 -4"   biastype="affine"
-             ctrlrange="-0.4 0.4"   forcerange="-120 120"/>
+             gainprm="100 0 0" biasprm="0 -100 -5"  biastype="affine"
+             ctrlrange="-0.4 0.4"   forcerange="-150 150"/>
     <general name="fr_hip_pitch_act" joint="fr_hip_pitch"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-0.8 0.8"   forcerange="-350 350"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-0.5 1.2"   forcerange="-400 400"/>
     <general name="fr_knee_act"      joint="fr_knee"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-1.6 -0.1"  forcerange="-400 400"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-1.8 -0.3"  forcerange="-400 400"/>
 
     <!-- REAR-LEFT -->
     <general name="rl_hip_roll_act"  joint="rl_hip_roll"
-             gainprm="80 0 0"  biasprm="0 -80 -4"   biastype="affine"
-             ctrlrange="-0.4 0.4"   forcerange="-120 120"/>
+             gainprm="100 0 0" biasprm="0 -100 -5"  biastype="affine"
+             ctrlrange="-0.4 0.4"   forcerange="-150 150"/>
     <general name="rl_hip_pitch_act" joint="rl_hip_pitch"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-0.8 0.8"   forcerange="-350 350"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-0.5 1.2"   forcerange="-400 400"/>
     <general name="rl_knee_act"      joint="rl_knee"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-1.6 -0.1"  forcerange="-400 400"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-1.8 -0.3"  forcerange="-400 400"/>
 
     <!-- REAR-RIGHT -->
     <general name="rr_hip_roll_act"  joint="rr_hip_roll"
-             gainprm="80 0 0"  biasprm="0 -80 -4"   biastype="affine"
-             ctrlrange="-0.4 0.4"   forcerange="-120 120"/>
+             gainprm="100 0 0" biasprm="0 -100 -5"  biastype="affine"
+             ctrlrange="-0.4 0.4"   forcerange="-150 150"/>
     <general name="rr_hip_pitch_act" joint="rr_hip_pitch"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-0.8 0.8"   forcerange="-350 350"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-0.5 1.2"   forcerange="-400 400"/>
     <general name="rr_knee_act"      joint="rr_knee"
-             gainprm="200 0 0" biasprm="0 -200 -10"  biastype="affine"
-             ctrlrange="-1.6 -0.1"  forcerange="-400 400"/>
+             gainprm="200 0 0" biasprm="0 -200 -8"  biastype="affine"
+             ctrlrange="-1.8 -0.3"  forcerange="-400 400"/>
   </actuator>
 
-  <!-- ═══════════════════════════════════════════════════════
-       SENSORS
-  ═══════════════════════════════════════════════════════ -->
   <sensor>
     <accelerometer name="imu_acc" site="imu_site"/>
     <gyro name="imu_gyro" site="imu_site"/>
@@ -292,34 +314,36 @@
   </sensor>
 
   <!-- ═══════════════════════════════════════════════════════
-       KEYFRAME — Natural standing pose
-       qpos order: freejoint(7) + 12 hinge joints
-       freejoint: x y z  qw qx qy qz
-       joints (per leg): hip_roll hip_pitch knee
-       Standing angles computed so feet touch ground at z≈0
+       KEYFRAME — Z-shaped standing pose (like Go1/A1 pattern)
 
-       Front legs: roll=0.05, pitch=0.0, knee=-0.55
-         effective height = 0.45*cos(0) + 0.45*cos(-0.55) + 0.04
-                         = 0.45 + 0.45*0.852 + 0.04 = 0.874m
-         hip at z=1.02-0.12=0.90 → foot at 0.90-0.874=0.026 ✓
+       ALL legs: hip_roll=0, hip_pitch=0.40, knee=-0.80
+       Upper leg leans forward, lower leg angles back → foot under hip
 
-       Rear legs: roll=0.05, pitch=-0.10, knee=-0.60
-         effective height = 0.48*cos(-0.10) + 0.48*cos(-0.70) + 0.04
-                         = 0.48*0.995 + 0.48*0.765 + 0.04 = 0.885m
-         hip at z=1.02-0.08=0.94 → foot at 0.94-0.885=0.055 ✓
+       Front legs (0.45m segments):
+         Upper: dx= 0.45*sin(0.40) = 0.175, dz=-0.45*cos(0.40) = -0.414
+         Lower (total angle 0.40-0.80=-0.40):
+                dx=-0.45*sin(0.40) =-0.175, dz=-0.45*cos(0.40) = -0.414
+         Net: dx=0, height=0.828+0.04=0.868m
+         Hip z=1.01-0.12=0.89, foot z=0.89-0.868=0.022 ✓
+
+       Rear legs (0.48m segments):
+         Upper: dx= 0.48*sin(0.40) = 0.187, dz=-0.48*cos(0.40) = -0.442
+         Lower: dx=-0.48*sin(0.40) =-0.187, dz=-0.48*cos(0.40) = -0.442
+         Net: dx=0, height=0.884+0.04=0.924m
+         Hip z=1.01-0.08=0.93, foot z=0.93-0.924=0.006 ✓
   ═══════════════════════════════════════════════════════ -->
   <keyframe>
     <key name="standing" qpos="
-      0 0 1.02  1 0 0 0
-      0.05  0.0  -0.55
-     -0.05  0.0  -0.55
-      0.05 -0.10 -0.60
-     -0.05 -0.10 -0.60
+      0 0 1.01  1 0 0 0
+      0.0  0.40  -0.80
+      0.0  0.40  -0.80
+      0.0  0.40  -0.80
+      0.0  0.40  -0.80
     " ctrl="
-      0.05  0.0  -0.55
-     -0.05  0.0  -0.55
-      0.05 -0.10 -0.60
-     -0.05 -0.10 -0.60
+      0.0  0.40  -0.80
+      0.0  0.40  -0.80
+      0.0  0.40  -0.80
+      0.0  0.40  -0.80
     "/>
   </keyframe>
 </mujoco>

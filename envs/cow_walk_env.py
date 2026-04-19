@@ -1,15 +1,14 @@
 """
-Highland Cow Walking Environment v2 — Gymnasium + MuJoCo
+Highland Cow Walking Environment v3 — Gymnasium + MuJoCo
 ========================================================
-Complete rewrite optimized for RL locomotion training.
+Based on proven Unitree Go1/A1 Z-shaped leg topology.
 
-Key improvements over v1:
-  1. PD position control — RL outputs target joint angles (not raw torques)
-  2. Standing keyframe — cow starts in a valid stance, not straight-legged
-  3. Projected gravity observation — more RL-friendly than raw quaternions
-  4. Action = offset from standing pose — action=0 means "stand still"
-  5. Domain randomization — mass, friction, PD gains
-  6. Better reward shaping — based on Rudin et al. (2022) "Learning to Walk"
+Key design (based on MuJoCo Menagerie quadruped models):
+  1. Z-shaped legs: hip_pitch forward, knee bends back → feet under hips
+  2. ALL 4 legs identical configuration (proven RL pattern)
+  3. PD position actuators with action = offset from standing pose
+  4. Projected gravity observation (no quaternion double-cover)
+  5. Curriculum learning support: target_speed ramps from 0 (standing) to walking
 
 Observation (48 dims):
   - projected gravity in body frame  (3)
@@ -50,20 +49,21 @@ FOOT_GEOM_NAMES = [
     "fl_foot_geom", "fr_foot_geom", "rl_foot_geom", "rr_foot_geom",
 ]
 
-# Default standing pose (must match keyframe in MJCF)
+# Default standing pose — Z-shaped legs (must match keyframe in MJCF)
+# All 4 legs identical: hip_roll=0, hip_pitch=0.40, knee=-0.80
 DEFAULT_ANGLES = np.array([
-    0.05,  0.0,  -0.55,   # FL: roll, pitch, knee
-   -0.05,  0.0,  -0.55,   # FR
-    0.05, -0.10, -0.60,   # RL
-   -0.05, -0.10, -0.60,   # RR
+    0.0,  0.40,  -0.80,   # FL: roll, pitch, knee
+    0.0,  0.40,  -0.80,   # FR
+    0.0,  0.40,  -0.80,   # RL
+    0.0,  0.40,  -0.80,   # RR
 ], dtype=np.float32)
 
 # How far from default each joint can deviate (per action unit)
 ACTION_SCALE = np.array([
-    0.2, 0.4, 0.4,   # FL
-    0.2, 0.4, 0.4,   # FR
-    0.2, 0.4, 0.4,   # RL
-    0.2, 0.4, 0.4,   # RR
+    0.2, 0.5, 0.5,   # FL
+    0.2, 0.5, 0.5,   # FR
+    0.2, 0.5, 0.5,   # RL
+    0.2, 0.5, 0.5,   # RR
 ], dtype=np.float32)
 
 # Episode parameters
@@ -71,8 +71,8 @@ MAX_EPISODE_STEPS = 2000   # 2000 × 0.02s = 40 seconds
 N_SUBSTEPS = 10            # physics steps per control step (0.002s × 10 = 0.02s)
 CONTROL_DT = 0.02          # 50 Hz control
 
-# Target body height (center of torso when standing)
-TARGET_HEIGHT = 1.00
+# Target body height (center of torso when standing, after settling)
+TARGET_HEIGHT = 0.98
 
 
 class HighlandCowWalkEnv(gym.Env):
@@ -195,54 +195,60 @@ class HighlandCowWalkEnv(gym.Env):
         return obs
 
     def _compute_reward(self, action):
-        """Reward function based on Rudin et al. (2022) style."""
+        """Reward function with curriculum support.
+
+        When target_speed=0: maximizes standing stability reward.
+        When target_speed>0: adds forward velocity tracking.
+        """
         linvel_body, angvel_body = self._get_body_velocity()
-        forward_vel = linvel_body[0]  # x in body frame ≈ forward
+        forward_vel = linvel_body[0]
         lateral_vel = linvel_body[1]
 
         body_height = self.data.xpos[self._torso_id][2]
-
-        # Joint state for penalties
+        proj_grav = self._get_projected_gravity()
         joint_pos_offset, joint_vel = self._get_joint_state()
 
         # ── REWARDS ──
 
-        # 1. Forward velocity tracking (gaussian)
+        # 1. Forward velocity tracking (gaussian around target)
         vel_error = forward_vel - self.target_speed
-        r_velocity = 2.0 * math.exp(-4.0 * vel_error**2)
+        r_velocity = 1.5 * math.exp(-4.0 * vel_error**2)
 
-        # 2. Alive bonus (scaled by height maintenance)
+        # 2. Alive / height bonus (strongest reward — stay upright!)
         height_error = body_height - TARGET_HEIGHT
-        r_alive = 0.5 * math.exp(-8.0 * height_error**2)
+        r_alive = 1.0 * math.exp(-8.0 * height_error**2)
 
         # 3. Upright bonus (projected gravity z should be -1 when level)
-        proj_grav = self._get_projected_gravity()
-        r_upright = 0.3 * (1.0 + proj_grav[2])  # 0 when upside down, 0.6 when level
+        r_upright = 0.5 * max(0.0, -proj_grav[2])  # 0.5 when level, 0 when tilted
+
+        # 4. Foot contact regularity (reward having feet on ground)
+        contacts = self._get_foot_contacts()
+        r_contact = 0.1 * np.sum(contacts)  # reward each grounded foot
 
         # ── PENALTIES ──
 
-        # 4. Energy penalty (minimize torque * velocity)
+        # 5. Energy penalty
         torques = self.data.actuator_force[:N_ACTUATORS]
         energy = np.sum(np.abs(torques * joint_vel))
-        p_energy = 0.0005 * energy
+        p_energy = 0.0003 * energy
 
-        # 5. Action rate penalty (smooth motion)
+        # 6. Action rate penalty (smooth motion)
         action_diff = action - self._prev_action
-        p_action_rate = 0.02 * np.sum(action_diff**2)
+        p_action_rate = 0.01 * np.sum(action_diff**2)
 
-        # 6. Action magnitude penalty (prefer standing pose)
-        p_action_mag = 0.005 * np.sum(action**2)
+        # 7. Action magnitude penalty (prefer staying near standing pose)
+        p_action_mag = 0.003 * np.sum(action**2)
 
-        # 7. Lateral velocity penalty
-        p_lateral = 0.5 * lateral_vel**2
+        # 8. Lateral velocity penalty
+        p_lateral = 0.3 * lateral_vel**2
 
-        # 8. Angular velocity penalty (no spinning)
-        p_angvel = 0.05 * np.sum(angvel_body**2)
+        # 9. Angular velocity penalty (no spinning)
+        p_angvel = 0.03 * np.sum(angvel_body**2)
 
-        # 9. Joint velocity penalty (smooth joints)
-        p_joint_vel = 0.001 * np.sum(joint_vel**2)
+        # 10. Joint velocity penalty (smooth joints)
+        p_joint_vel = 0.0005 * np.sum(joint_vel**2)
 
-        reward = (r_velocity + r_alive + r_upright
+        reward = (r_velocity + r_alive + r_upright + r_contact
                   - p_energy - p_action_rate - p_action_mag
                   - p_lateral - p_angvel - p_joint_vel)
 
@@ -280,6 +286,10 @@ class HighlandCowWalkEnv(gym.Env):
         for fid in self._foot_geom_ids:
             self.model.geom_friction[fid] = (
                 self._default_geom_friction[fid] * friction_scale)
+
+    def set_target_speed(self, speed):
+        """Set target forward speed (used by curriculum callback)."""
+        self.target_speed = speed
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
