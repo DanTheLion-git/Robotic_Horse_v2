@@ -72,6 +72,24 @@ CONTROL_DT = 0.02          # 50 Hz control
 
 TARGET_HEIGHT = 1.00
 
+# ── Reference gait parameters (sinusoidal walking prior) ──
+# These define what a "good walk" looks like, giving RL a strong initial signal.
+# Phase offsets for lateral-sequence walk
+GAIT_PHASES = {
+    "fl": 0.00, "fr": 0.50, "rl": 0.75, "rr": 0.25,
+}
+# Leg config: (ctrl_offset, is_front)
+GAIT_LEGS = [
+    ("fl", 1, True), ("fr", 4, True),
+    ("rl", 7, False), ("rr", 10, False),
+]
+FRONT_HP_AMP = 0.15    # front hip pitch swing
+FRONT_KN_LIFT = 0.25   # front knee lift during swing
+REAR_HP_AMP = 0.18     # rear hip pitch swing
+REAR_KN_LIFT = 0.20    # rear knee lift during swing
+HIP_ROLL_AMP = 0.03    # lateral sway
+SPINE_GAIT_AMP = 0.05  # body undulation
+
 # Command ranges for training randomization
 CMD_VX_RANGE = (-0.5, 2.0)    # m/s: reverse to trot
 CMD_YAW_RANGE = (-1.0, 1.0)   # rad/s: turn left/right
@@ -183,6 +201,44 @@ class HighlandCowWalkEnv(gym.Env):
                     contacts[j] = 1.0
         return contacts
 
+    def _get_reference_joints(self):
+        """Compute reference joint angles from sinusoidal gait prior.
+
+        Gives the RL agent a strong hint about what walking looks like.
+        The reference frequency scales with the commanded speed.
+        When cmd_vx ≈ 0, reference is just the standing pose.
+        """
+        speed = abs(self.cmd_vx)
+        if speed < 0.1:
+            return DEFAULT_ANGLES.copy()
+
+        # Scale frequency with speed: slow walk 0.8 Hz, fast trot 2.0 Hz
+        freq = 0.8 + 0.6 * speed
+        speed_scale = min(speed / 1.0, 1.5)  # clamp amplitude scaling
+        direction = 1.0 if self.cmd_vx > 0 else -1.0
+
+        t = self._step_count * CONTROL_DT
+        ref = DEFAULT_ANGLES.copy()
+
+        # Spine follows yaw command slightly
+        spine_phase = 2.0 * math.pi * freq * t
+        ref[0] = SPINE_GAIT_AMP * math.sin(spine_phase) * speed_scale
+        if abs(self.cmd_yaw) > 0.1:
+            ref[0] += self.cmd_yaw * 0.10
+
+        for leg_name, offset, is_front in GAIT_LEGS:
+            phase = GAIT_PHASES[leg_name]
+            phi = 2.0 * math.pi * (freq * t + phase)
+
+            hp_amp = FRONT_HP_AMP if is_front else REAR_HP_AMP
+            kn_lift = FRONT_KN_LIFT if is_front else REAR_KN_LIFT
+
+            ref[offset + 0] = HIP_ROLL_AMP * math.cos(phi)
+            ref[offset + 1] = DEFAULT_ANGLES[offset + 1] - direction * hp_amp * math.sin(phi) * speed_scale
+            ref[offset + 2] = DEFAULT_ANGLES[offset + 2] + kn_lift * max(0.0, math.sin(phi)) * speed_scale
+
+        return ref
+
     def _get_obs(self):
         proj_gravity = self._get_projected_gravity()
         linvel_body, angvel_body = self._get_body_velocity()
@@ -208,11 +264,12 @@ class HighlandCowWalkEnv(gym.Env):
         return obs
 
     def _compute_reward(self, action):
-        """Command-tracking reward function.
+        """Command-tracking + reference motion reward function.
 
         Rewards:
           - Track cmd_vx with forward velocity
           - Track cmd_yaw with yaw rate
+          - Match reference gait pattern (motion prior)
           - Stay upright and at correct height
           - Keep feet on ground
         Penalties:
@@ -221,7 +278,7 @@ class HighlandCowWalkEnv(gym.Env):
         linvel_body, angvel_body = self._get_body_velocity()
         forward_vel = linvel_body[0]
         lateral_vel = linvel_body[1]
-        yaw_rate = angvel_body[2]  # yaw = rotation around Z in body frame
+        yaw_rate = angvel_body[2]
 
         body_height = self.data.xpos[self._torso_id][2]
         proj_grav = self._get_projected_gravity()
@@ -229,52 +286,57 @@ class HighlandCowWalkEnv(gym.Env):
 
         # ── REWARDS ──
 
-        # 1. Forward velocity tracking
+        # 1. Forward velocity tracking (main task objective)
         vx_error = forward_vel - self.cmd_vx
-        r_velocity = 1.5 * math.exp(-4.0 * vx_error**2)
+        r_velocity = 2.0 * math.exp(-4.0 * vx_error**2)
 
         # 2. Yaw rate tracking
         yaw_error = yaw_rate - self.cmd_yaw
         r_yaw = 0.8 * math.exp(-4.0 * yaw_error**2)
 
-        # 3. Height maintenance
+        # 3. Reference motion tracking (gait prior — guides early learning)
+        ref_joints = self._get_reference_joints()
+        actual_joints = DEFAULT_ANGLES + joint_pos_offset
+        ref_error = np.sum((actual_joints - ref_joints)**2)
+        r_reference = 1.0 * math.exp(-2.0 * ref_error)
+
+        # 4. Height maintenance
         height_error = body_height - TARGET_HEIGHT
         r_alive = 1.0 * math.exp(-8.0 * height_error**2)
 
-        # 4. Upright bonus
+        # 5. Upright bonus
         r_upright = 0.5 * max(0.0, -proj_grav[2])
 
-        # 5. Foot contact
+        # 6. Foot contact (at least 2 feet should be on ground)
         contacts = self._get_foot_contacts()
         r_contact = 0.1 * np.sum(contacts)
 
         # ── PENALTIES ──
 
-        # 6. Energy
+        # 7. Energy
         torques = self.data.actuator_force[:N_ACTUATORS]
         energy = np.sum(np.abs(torques * joint_vel))
-        p_energy = 0.0003 * energy
+        p_energy = 0.0002 * energy
 
-        # 7. Action rate
+        # 8. Action rate (smoothness)
         action_diff = action - self._prev_action
-        p_action_rate = 0.01 * np.sum(action_diff**2)
+        p_action_rate = 0.008 * np.sum(action_diff**2)
 
-        # 8. Action magnitude
-        p_action_mag = 0.003 * np.sum(action**2)
+        # 9. Action magnitude
+        p_action_mag = 0.002 * np.sum(action**2)
 
-        # 9. Lateral velocity (penalize unless command is turning)
-        # When turning, some lateral drift is acceptable
+        # 10. Lateral velocity
         lat_threshold = 0.1 * abs(self.cmd_yaw)
         lat_excess = max(0.0, abs(lateral_vel) - lat_threshold)
-        p_lateral = 0.3 * lat_excess**2
+        p_lateral = 0.2 * lat_excess**2
 
-        # 10. Unwanted angular velocity (penalize roll/pitch spin, not yaw tracking)
-        p_angvel_rp = 0.05 * (angvel_body[0]**2 + angvel_body[1]**2)
+        # 11. Roll/pitch angular velocity
+        p_angvel_rp = 0.03 * (angvel_body[0]**2 + angvel_body[1]**2)
 
-        # 11. Joint velocity smoothness
-        p_joint_vel = 0.0005 * np.sum(joint_vel**2)
+        # 12. Joint velocity smoothness
+        p_joint_vel = 0.0003 * np.sum(joint_vel**2)
 
-        reward = (r_velocity + r_yaw + r_alive + r_upright + r_contact
+        reward = (r_velocity + r_yaw + r_reference + r_alive + r_upright + r_contact
                   - p_energy - p_action_rate - p_action_mag
                   - p_lateral - p_angvel_rp - p_joint_vel)
 
