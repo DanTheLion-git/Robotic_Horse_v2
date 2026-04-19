@@ -6,12 +6,19 @@ Usage:
     python scripts/evaluate.py                                    # Use best model
     python scripts/evaluate.py --model checkpoints/cow_walk_final.zip  # Specific model
     python scripts/evaluate.py --no-render                        # Headless metrics
+
+Keyboard Controls (visual mode):
+    W / S  — increase / decrease forward speed
+    A / D  — turn left / right
+    SPACE  — stop (zero command)
+    Q      — quit
 """
 
 import argparse
 import os
 import sys
 import time
+import threading
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,9 +47,9 @@ def load_model(model_path, checkpoint_dir):
     return model, vecnorm
 
 
-def evaluate_headless(model, vecnorm, n_episodes=10, target_speed=1.0):
+def evaluate_headless(model, vecnorm, n_episodes=10):
     """Run evaluation without rendering."""
-    env = HighlandCowWalkEnv(target_speed=target_speed, randomize=False)
+    env = HighlandCowWalkEnv(randomize=False, cmd_vx=1.0, cmd_yaw=0.0)
 
     all_rewards, all_lengths, all_speeds, all_heights = [], [], [], []
 
@@ -86,14 +93,78 @@ def evaluate_headless(model, vecnorm, n_episodes=10, target_speed=1.0):
     print("=" * 50)
     print(f"  Mean reward:  {np.mean(all_rewards):.1f} ± {np.std(all_rewards):.1f}")
     print(f"  Mean length:  {np.mean(all_lengths):.0f} steps")
-    print(f"  Mean speed:   {np.mean(all_speeds):.2f} m/s (target: {target_speed})")
+    print(f"  Mean speed:   {np.mean(all_speeds):.2f} m/s")
     print(f"  Mean height:  {np.mean(all_heights):.2f} m")
     print("=" * 50)
 
 
-def evaluate_visual(model, vecnorm, target_speed=1.0):
-    """Run with MuJoCo viewer for visual evaluation."""
-    env = HighlandCowWalkEnv(target_speed=target_speed, randomize=False)
+class KeyboardController:
+    """Thread-safe keyboard input for WASD control."""
+
+    def __init__(self):
+        self.cmd_vx = 0.0
+        self.cmd_yaw = 0.0
+        self.running = True
+        self._lock = threading.Lock()
+
+    def start(self):
+        t = threading.Thread(target=self._input_loop, daemon=True)
+        t.start()
+
+    def _input_loop(self):
+        """Read single keystrokes (cross-platform)."""
+        try:
+            import tty
+            import termios
+            import select
+
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while self.running:
+                    if select.select([sys.stdin], [], [], 0.1)[0]:
+                        ch = sys.stdin.read(1).lower()
+                        self._handle_key(ch)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        except (ImportError, termios.error):
+            # Windows fallback
+            try:
+                import msvcrt
+                while self.running:
+                    if msvcrt.kbhit():
+                        ch = msvcrt.getch().decode('utf-8', errors='ignore').lower()
+                        self._handle_key(ch)
+                    else:
+                        time.sleep(0.05)
+            except ImportError:
+                print("  [Warning] No keyboard input available")
+
+    def _handle_key(self, ch):
+        with self._lock:
+            if ch == 'w':
+                self.cmd_vx = min(self.cmd_vx + 0.2, 2.0)
+            elif ch == 's':
+                self.cmd_vx = max(self.cmd_vx - 0.2, -0.5)
+            elif ch == 'a':
+                self.cmd_yaw = min(self.cmd_yaw + 0.2, 1.0)
+            elif ch == 'd':
+                self.cmd_yaw = max(self.cmd_yaw - 0.2, -1.0)
+            elif ch == ' ':
+                self.cmd_vx = 0.0
+                self.cmd_yaw = 0.0
+            elif ch == 'q':
+                self.running = False
+
+    def get_command(self):
+        with self._lock:
+            return self.cmd_vx, self.cmd_yaw
+
+
+def evaluate_visual(model, vecnorm):
+    """Run with MuJoCo viewer + WASD keyboard control."""
+    env = HighlandCowWalkEnv(randomize=False, cmd_vx=0.0, cmd_yaw=0.0)
     obs, _ = env.reset()
     if vecnorm is not None:
         obs = vecnorm.normalize_obs(obs)
@@ -101,15 +172,23 @@ def evaluate_visual(model, vecnorm, target_speed=1.0):
     m = env.model
     d = env.data
 
+    kb = KeyboardController()
+    kb.start()
+
     print("\nLaunching MuJoCo viewer...")
-    print("  Press ESC to quit")
-    print("  The cow should start walking forward")
+    print("  W/S — forward/backward speed")
+    print("  A/D — turn left/right")
+    print("  SPACE — stop")
+    print("  Q — quit")
 
     with mujoco.viewer.launch_passive(m, d) as viewer:
         step = 0
         total_reward = 0
 
-        while viewer.is_running():
+        while viewer.is_running() and kb.running:
+            cmd_vx, cmd_yaw = kb.get_command()
+            env.set_command(cmd_vx, cmd_yaw)
+
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             if vecnorm is not None:
@@ -121,7 +200,8 @@ def evaluate_visual(model, vecnorm, target_speed=1.0):
 
             if step % 100 == 0:
                 print(f"  Step {step}: "
-                      f"speed={info.get('forward_vel', 0):.2f} m/s, "
+                      f"cmd=[{cmd_vx:.1f}, {cmd_yaw:.1f}], "
+                      f"vel={info.get('forward_vel', 0):.2f} m/s, "
                       f"height={info.get('height', 0):.2f} m, "
                       f"reward={total_reward:.1f}")
 
@@ -137,6 +217,7 @@ def evaluate_visual(model, vecnorm, target_speed=1.0):
 
             time.sleep(CONTROL_DT)
 
+    kb.running = False
     env.close()
 
 
@@ -148,8 +229,6 @@ def main():
                         help="Run headless evaluation only")
     parser.add_argument("--episodes", type=int, default=10,
                         help="Number of evaluation episodes (headless mode)")
-    parser.add_argument("--target-speed", type=float, default=1.0,
-                        help="Target speed in m/s")
     args = parser.parse_args()
 
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -173,9 +252,9 @@ def main():
     model, vecnorm = load_model(model_path, checkpoint_dir)
 
     if args.no_render:
-        evaluate_headless(model, vecnorm, args.episodes, args.target_speed)
+        evaluate_headless(model, vecnorm, args.episodes)
     else:
-        evaluate_visual(model, vecnorm, args.target_speed)
+        evaluate_visual(model, vecnorm)
 
 
 if __name__ == "__main__":

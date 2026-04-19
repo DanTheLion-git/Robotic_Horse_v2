@@ -118,7 +118,7 @@ def main():
     initial_speed = args.target_speed if args.no_curriculum else 0.0
 
     print("=" * 60)
-    print("  Highland Cow — PPO Gait Training (v3)")
+    print("  Highland Cow — PPO Gait Training (v5 — Bovine Anatomy)")
     print("=" * 60)
     print(f"  Steps:          {args.steps:,}")
     print(f"  Parallel envs:  {args.n_envs}")
