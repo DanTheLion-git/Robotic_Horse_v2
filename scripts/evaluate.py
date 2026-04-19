@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
-from envs.cow_walk_env import HighlandCowWalkEnv
+from envs.cow_walk_env import HighlandCowWalkEnv, CONTROL_DT
 
 import mujoco
 import mujoco.viewer
@@ -28,11 +28,12 @@ def load_model(model_path, checkpoint_dir):
     """Load PPO model and VecNormalize stats."""
     model = PPO.load(model_path)
 
-    # Try to load VecNormalize stats
     vecnorm_path = os.path.join(checkpoint_dir, "vecnormalize.pkl")
     vecnorm = None
     if os.path.exists(vecnorm_path):
-        vecnorm = VecNormalize.load(vecnorm_path, DummyVecEnv([lambda: HighlandCowWalkEnv()]))
+        vecnorm = VecNormalize.load(
+            vecnorm_path,
+            DummyVecEnv([lambda: HighlandCowWalkEnv(randomize=False)]))
         vecnorm.training = False
         vecnorm.norm_reward = False
         print(f"Loaded VecNormalize from {vecnorm_path}")
@@ -40,22 +41,18 @@ def load_model(model_path, checkpoint_dir):
 
 
 def evaluate_headless(model, vecnorm, n_episodes=10, target_speed=1.0):
-    """Run evaluation without rendering, report metrics."""
-    env = HighlandCowWalkEnv(target_speed=target_speed)
-    
-    all_rewards = []
-    all_lengths = []
-    all_speeds = []
-    all_heights = []
+    """Run evaluation without rendering."""
+    env = HighlandCowWalkEnv(target_speed=target_speed, randomize=False)
+
+    all_rewards, all_lengths, all_speeds, all_heights = [], [], [], []
 
     for ep in range(n_episodes):
         obs, _ = env.reset()
         if vecnorm is not None:
             obs = vecnorm.normalize_obs(obs)
-        
+
         total_reward = 0
-        speeds = []
-        heights = []
+        speeds, heights = [], []
         step = 0
 
         while True:
@@ -63,7 +60,7 @@ def evaluate_headless(model, vecnorm, n_episodes=10, target_speed=1.0):
             obs, reward, terminated, truncated, info = env.step(action)
             if vecnorm is not None:
                 obs = vecnorm.normalize_obs(obs)
-            
+
             total_reward += reward
             speeds.append(info.get("forward_vel", 0))
             heights.append(info.get("height", 0))
@@ -96,7 +93,7 @@ def evaluate_headless(model, vecnorm, n_episodes=10, target_speed=1.0):
 
 def evaluate_visual(model, vecnorm, target_speed=1.0):
     """Run with MuJoCo viewer for visual evaluation."""
-    env = HighlandCowWalkEnv(target_speed=target_speed)
+    env = HighlandCowWalkEnv(target_speed=target_speed, randomize=False)
     obs, _ = env.reset()
     if vecnorm is not None:
         obs = vecnorm.normalize_obs(obs)
@@ -122,7 +119,6 @@ def evaluate_visual(model, vecnorm, target_speed=1.0):
 
             viewer.sync()
 
-            # Print periodic updates
             if step % 100 == 0:
                 print(f"  Step {step}: "
                       f"speed={info.get('forward_vel', 0):.2f} m/s, "
@@ -139,8 +135,7 @@ def evaluate_visual(model, vecnorm, target_speed=1.0):
                 step = 0
                 total_reward = 0
 
-            # Real-time pacing
-            time.sleep(0.01)
+            time.sleep(CONTROL_DT)
 
     env.close()
 

@@ -38,7 +38,7 @@ import gymnasium as gym
 def make_env(rank, seed=0, target_speed=1.0):
     """Create a single environment instance."""
     def _init():
-        env = HighlandCowWalkEnv(target_speed=target_speed)
+        env = HighlandCowWalkEnv(target_speed=target_speed, randomize=True)
         env.reset(seed=seed + rank)
         return env
     set_random_seed(seed + rank)
@@ -93,24 +93,24 @@ def main():
                             clip_obs=10.0, training=False)
 
     # PPO hyperparameters tuned for quadruped locomotion
-    # Based on published configs for ANYmal / Mini Cheetah RL training
+    # Based on Rudin et al. (2022) and Legged Gym configs
     ppo_kwargs = dict(
         policy="MlpPolicy",
         env=train_envs,
         learning_rate=3e-4,
-        n_steps=2048,           # steps per env before update
-        batch_size=256,         # minibatch size
-        n_epochs=10,            # optimization epochs per update
-        gamma=0.99,             # discount factor
-        gae_lambda=0.95,        # GAE lambda
-        clip_range=0.2,         # PPO clip range
-        clip_range_vf=None,     # no value function clipping
-        ent_coef=0.01,          # entropy bonus (encourages exploration)
-        vf_coef=0.5,            # value function coefficient
-        max_grad_norm=0.5,      # gradient clipping
+        n_steps=4096,           # more steps per update for stable learning
+        batch_size=256,
+        n_epochs=5,             # fewer epochs to prevent overfitting
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        clip_range_vf=None,
+        ent_coef=0.005,         # less entropy for more exploitation
+        vf_coef=0.5,
+        max_grad_norm=1.0,
         policy_kwargs=dict(
-            net_arch=dict(pi=[256, 256], vf=[256, 256]),  # separate actor/critic
-            log_std_init=-1.0,   # initial action std (conservative start)
+            net_arch=dict(pi=[256, 128, 64], vf=[256, 128, 64]),
+            log_std_init=-1.5,   # smaller initial std (conservative PD targets)
         ),
         verbose=1,
         tensorboard_log=log_dir,
