@@ -123,4 +123,5 @@ python scripts/evaluate.py
 
 ## Git History
 - `329da5b` — v3: Z-shaped legs, capsule body, curriculum (Summary #1)
-- `df2dc33` — v4: Anatomically correct bovine with spine yaw (this summary)
+- `df2dc33` — v4: Anatomically correct bovine with spine yaw
+- `ef4a818` — v5: Hand-coded gait controller + reference motion RL prior
